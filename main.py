@@ -1,5 +1,8 @@
+import os
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.staticfiles import StaticFiles
 
 from core.config import settings
 from api.checkout import router as checkout_router
@@ -16,7 +19,7 @@ app = FastAPI(
 # Настройка CORS, чтобы ваш фронтенд (React/Vue) мог отправлять запросы к API
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5174", "http://localhost:3000", "https://ваш-домен.ру"],
+    allow_origins=["http://localhost:5173", "http://localhost:3000", "https://ваш-домен.ру"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -31,3 +34,8 @@ app.include_router(catalog_router, prefix="/api/v1", tags=["Catalog"])
 async def health_check():
     """Проверка доступности сервера"""
     return {"status": "ok", "message": "API функционирует нормально"}
+
+
+os.makedirs("uploads", exist_ok=True)
+
+app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
