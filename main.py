@@ -10,6 +10,9 @@ from api.webhooks import router as webhook_router
 from api.cart import router as cart_router
 from api.catalog import router as catalog_router
 
+# 1. ДОБАВИЛИ ИМПОРТ РОУТЕРА АВТОРИЗАЦИИ
+from api.auth import router as auth_router
+
 app = FastAPI(
     title=settings.PROJECT_NAME,
     description="Бэкенд магазина и онлайн-записи",
@@ -25,17 +28,19 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+os.makedirs("uploads/images", exist_ok=True)
+app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
+
 # Подключение роутеров
+app.include_router(auth_router, prefix="/api/v1", tags=["Авторизация"]) # <--- 2. ПОДКЛЮЧИЛИ РОУТЕР!
 app.include_router(checkout_router, prefix="/api/v1", tags=["Заказы"])
 app.include_router(webhook_router, prefix="/api/v1", tags=["Интеграции"])
 app.include_router(cart_router, prefix="/api/v1", tags=["Корзина"])
 app.include_router(catalog_router, prefix="/api/v1", tags=["Catalog"])
+
 @app.get("/health", tags=["Система"])
 async def health_check():
     """Проверка доступности сервера"""
     return {"status": "ok", "message": "API функционирует нормально"}
 
-
-os.makedirs("uploads", exist_ok=True)
-
-app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
+# (Дублирующийся код с os.makedirs и app.mount снизу удален, так как он уже есть выше)
