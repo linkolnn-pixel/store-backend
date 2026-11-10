@@ -10,6 +10,7 @@ from alembic import context
 from core.config import settings
 from models.base import Base
 from models.product_meta import ProductMeta
+from models.outbox import OutboxEvent
 
 import models.order
 
