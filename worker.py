@@ -90,7 +90,7 @@ async def process_outbox_events():
                     # 1. ПРОВЕРЯЕМ, НЕТ ЛИ УЖЕ ТАКОГО ЗАКАЗА В DJANGO (ИДЕМПОТЕНТНОСТЬ)
                     if local_order_id:
                         check_resp = await client.get(
-                            f"{settings.WAREHOUSEI_URL}/api/sales/",
+                            f"{settings.WAREHOUSE_URL}/api/sales/",
                             params={"external_id": local_order_id}
                         )
                         if check_resp.status_code == 200:
@@ -143,7 +143,7 @@ async def process_outbox_events():
 
                         items_text += f"• {product_name} — {item['quantity']} шт. ({item_total} руб.)\n"
 
-                        order_url = f"{settings.WAREHOUSE_URL}/sale/{created_sale_id}/"
+                        order_url = f"{settings.WAREHOUSE_URL}/inventory/sale/{created_sale_id}/"
 
                         tg_msg = (
                             f"🚨 <b>НОВЫЙ ЗАКАЗ #{payload.get('local_order_id')}</b>\n\n"
