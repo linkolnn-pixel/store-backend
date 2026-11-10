@@ -1,22 +1,20 @@
 import asyncio
+import os
+
 import httpx
 from sqlalchemy.future import select
 
+from core.config import settings
 from db.postgres import AsyncSessionLocal
 from models.outbox import OutboxEvent
 
-WAREHOUSE_URL = "http://127.0.0.1:8001/api"
-
-
-TELEGRAM_BOT_TOKEN = "9167651129:AAFN8GJE7zdWn4BRVXbZcwWwF-_qkyZXHJc"
-TELEGRAM_CHAT_ID = "27174020"
 
 
 async def send_telegram_message(client: httpx.AsyncClient, text: str):
     """Функция отправки сообщения в Telegram"""
-    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    url = f"https://api.telegram.org/bot{settings.TELEGRAM_BOT_TOKEN}/sendMessage"
     payload = {
-        "chat_id": TELEGRAM_CHAT_ID,
+        "chat_id": settings.TELEGRAM_CHAT_ID,
         "text": text,
         "parse_mode": "HTML"
     }
@@ -55,7 +53,7 @@ async def process_outbox_events():
 
                     # --- ЭТАП 1: КЛИЕНТ ---
                     customers_resp = await client.get(
-                        f"{WAREHOUSE_URL}/customers/",
+                        f"{settings.WAREHOUSE_URL}/api/customers/",
                         params={"phone": safe_phone}
                     )
                     customer_id = None
@@ -72,7 +70,7 @@ async def process_outbox_events():
                         }
 
                         create_resp = await client.post(
-                            f"{WAREHOUSE_URL}/customers/",
+                            f"{settings.WAREHOUSE_URL}/api/customers/",
                             json=new_customer
                         )
 
@@ -86,22 +84,44 @@ async def process_outbox_events():
                             )
 
                     # --- ЭТАП 2: ДОКУМЕНТ SALE В DJANGO ---
-                    sale_items = [
-                        {"product": i["product_id"], "quantity": i["quantity"], "sale_price": float(i["price"])}
-                        for i in payload["items"]
-                    ]
+                    local_order_id = str(payload.get('local_order_id', ''))
+                    created_sale_id = None
 
-                    sale_data = {
-                        "warehouse": 1,
-                        "customer": customer_id,
-                        "comment": f"Заказ #{payload.get('local_order_id', '???')}. Email: {payload.get('customer_email', '')}",
-                        "posted": False,
-                        "is_online": True,
-                        "items": sale_items
-                    }
-                    sale_resp = await client.post(f"{WAREHOUSE_URL}/sales/", json=sale_data)
-                    if sale_resp.status_code not in (200, 201):
-                        raise Exception(f"Ошибка создания Sale: {sale_resp.text}")
+                    # 1. ПРОВЕРЯЕМ, НЕТ ЛИ УЖЕ ТАКОГО ЗАКАЗА В DJANGO (ИДЕМПОТЕНТНОСТЬ)
+                    if local_order_id:
+                        check_resp = await client.get(
+                            f"{settings.WAREHOUSEI_URL}/api/sales/",
+                            params={"external_id": local_order_id}
+                        )
+                        if check_resp.status_code == 200:
+                            res = check_resp.json()
+                            res_list = res.get("results", res) if isinstance(res, dict) else res
+                            if res_list:
+                                created_sale_id = res_list[0]["id"]
+                                print(
+                                    f"⚠️ Заказ #{local_order_id} уже есть в Django (ID {created_sale_id}). Пропускаем создание дубля.")
+
+                    # 2. ЕСЛИ ЗАКАЗА НЕТ - СОЗДАЕМ
+                    if not created_sale_id:
+                        sale_items = [
+                            {"product": i["product_id"], "quantity": i["quantity"], "sale_price": float(i["price"])}
+                            for i in payload["items"]
+                        ]
+
+                        sale_data = {
+                            "warehouse": payload.get("warehouse_id", settings.DEFAULT_WAREHOUSE_ID),
+                            "customer": customer_id,
+                            "comment": f"Заказ #{local_order_id}. Email: {payload.get('customer_email', '')}",
+                            "posted": False,
+                            "is_online": True,
+                            "external_id": local_order_id,
+                            "items": sale_items
+                        }
+                        sale_resp = await client.post(f"{settings.WAREHOUSE_URL}/api/sales/", json=sale_data)
+                        if sale_resp.status_code not in (200, 201):
+                            raise Exception(f"Ошибка создания Sale: {sale_resp.text}")
+
+                        created_sale_id = sale_resp.json().get("id")
 
                     # --- ЭТАП 3: ОТПРАВКА В TELEGRAM ---
                     # Считаем общую сумму и красиво форматируем список товаров
@@ -113,7 +133,7 @@ async def process_outbox_events():
                         # Спрашиваем название товара у Django по его ID
                         product_name = f"Товар ID {item['product_id']}"
                         try:
-                            prod_resp = await client.get(f"{WAREHOUSE_URL}/products/{item['product_id']}/")
+                            prod_resp = await client.get(f"{settings.WAREHOUSE_URL}/api/products/{item['product_id']}/")
                             if prod_resp.status_code == 200:
                                 product_name = prod_resp.json().get("name", product_name)
                             else:
@@ -123,14 +143,16 @@ async def process_outbox_events():
 
                         items_text += f"• {product_name} — {item['quantity']} шт. ({item_total} руб.)\n"
 
-                    tg_msg = (
-                        f"🚨 <b>НОВЫЙ ЗАКАЗ #{payload.get('local_order_id')}</b>\n\n"
-                        f"👤 <b>Клиент:</b> {payload['customer_name']}\n"
-                        f"📞 <b>Телефон:</b> {safe_phone}\n"
-                        f"💳 <b>Сумма:</b> {total_sum} руб.\n\n"
-                        f"📦 <b>Состав заказа:</b>\n{items_text}"
-                    )
+                        order_url = f"{settings.WAREHOUSE_URL}/sale/{created_sale_id}/"
 
+                        tg_msg = (
+                            f"🚨 <b>НОВЫЙ ЗАКАЗ #{payload.get('local_order_id')}</b>\n\n"
+                            f"👤 <b>Клиент:</b> {payload['customer_name']}\n"
+                            f"📞 <b>Телефон:</b> {safe_phone}\n"
+                            f"💳 <b>Сумма:</b> {total_sum} руб.\n\n"
+                            f"📦 <b>Состав заказа:</b>\n{items_text}\n"
+                            f"🔗 <a href='{order_url}'>Открыть заказ в панели управления</a>"
+                        )
                     await send_telegram_message(client, tg_msg)
 
                     # --- ЭТАП 4: УСПЕХ! ---

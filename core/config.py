@@ -4,7 +4,12 @@ class Settings(BaseSettings):
     PROJECT_NAME: str = "Store Backend"
     DATABASE_URL: str
     REDIS_URL: str
-    WAREHOUSE_API_URL: str
+
+    WAREHOUSE_URL: str
+    DEFAULT_WAREHOUSE_ID: int
+
+    TELEGRAM_BOT_TOKEN: str
+    TELEGRAM_CHAT_ID: str
 
     SECRET_KEY: str
     ADMIN_USERNAME: str

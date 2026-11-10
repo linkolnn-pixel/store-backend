@@ -8,12 +8,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 
 from api.auth import get_current_admin
+from core.config import settings
 from db.postgres import get_db_session
 from models.product_meta import ProductMeta
 from schemas.product import ProductMetaUpdate
 
 router = APIRouter()
-WAREHOUSE_URL = "http://127.0.0.1:8001"
+
 
 
 @router.get("/catalog/categories", summary="Получить список категорий со склада")
@@ -21,7 +22,7 @@ async def get_categories():
     # Идем на склад за категориями
     async with httpx.AsyncClient(timeout=3.0) as client:
         try:
-            response = await client.get(f"{WAREHOUSE_URL}/api/categories/")
+            response = await client.get(f"{settings.WAREHOUSE_URL}/api/categories/")
             response.raise_for_status()
             categories_data = response.json()
 
@@ -39,7 +40,7 @@ async def get_catalog(db: AsyncSession = Depends(get_db_session)):
     # 1. Асинхронно идем на склад за остатками и ценами
     async with httpx.AsyncClient(timeout=3.0) as client:
         try:
-            response = await client.get(f"{WAREHOUSE_URL}/api/products/")
+            response = await client.get(f"{settings.WAREHOUSE_URL}/api/products/")
             response.raise_for_status()
             warehouse_data = response.json()
             products = warehouse_data.get("results", warehouse_data) if isinstance(warehouse_data,
@@ -96,7 +97,7 @@ async def get_product(
     # 1. Идем на склад за ценой и остатками
     async with httpx.AsyncClient(timeout=3.0) as client:
         try:
-            response = await client.get(f"{WAREHOUSE_URL}/api/products/{product_id}/")
+            response = await client.get(f"{settings.WAREHOUSE_URL}/api/products/{product_id}/")
             response.raise_for_status()
             p = response.json()
         except httpx.HTTPError:

@@ -1,3 +1,4 @@
+import os
 import uuid
 
 import httpx
@@ -5,13 +6,13 @@ from fastapi import APIRouter, HTTPException, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 
+from core.config import settings
 from db.postgres import get_db_session
 from models.product_meta import ProductMeta
 from schemas.cart import CartItemSchema, CartUpdateSchema, CartRemoveSchema  # <-- Добавили импорты здесь
 from db.redis import get_cart, save_cart
 
 router = APIRouter()
-WAREHOUSE_URL = "http://127.0.0.1:8001"
 
 @router.post("/cart/add", summary="Добавить товар или услугу в корзину")
 async def add_item_to_cart(item: CartItemSchema, session_id: str | None = None):
@@ -56,7 +57,7 @@ async def view_cart(session_id: str, db: AsyncSession = Depends(get_db_session))
     warehouse_products = {}
     try:
         async with httpx.AsyncClient(timeout=3.0) as client:
-            response = await client.get(f"{WAREHOUSE_URL}/api/products/")
+            response = await client.get(f"{settings.WAREHOUSE_URL}/api/products/")
             if response.status_code == 200:
                 data = response.json()
                 products_list = data.get("results", data) if isinstance(data, dict) else data
