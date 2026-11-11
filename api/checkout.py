@@ -80,7 +80,7 @@ async def process_checkout(
 
     # 5. Сохраняем всё СРАЗУ. 
     payment_id = f"mock_payment_{new_order.id}"
-    payment_url = "http://localhost:5173/success"
+    payment_url = "http://localhost:3000/success"
     new_order.payment_id = payment_id
 
     await db.commit()

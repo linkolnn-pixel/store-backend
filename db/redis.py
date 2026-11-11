@@ -13,7 +13,7 @@ async def save_cart(session_id: str, cart_data: dict, expire_seconds: int = 8640
     await redis_client.setex(
         name=f"cart:{session_id}",
         time=expire_seconds,
-        value=json.dumps(cart_data)
+        value=json.dumps(cart_data, default=str)
     )
 
 async def get_cart(session_id: str) -> dict | None:

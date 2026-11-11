@@ -1,21 +1,23 @@
 from pydantic import BaseModel, Field
-from typing import List
+from decimal import Decimal
 
-class CartItemSchema(BaseModel):
-    product_id: str = Field(..., description="ID товара из склада")
-    quantity: int = Field(..., gt=0, description="Количество (строго больше 0)")
-    price: float = Field(..., ge=0, description="Цена за единицу")
+class CartItemAddSchema(BaseModel):
+    product_id: int
+    quantity: int = Field(..., gt=0, description="Количество должно быть больше нуля")
 
-class CartSchema(BaseModel):
-    session_id: str
-    items: List[CartItemSchema]
-    total: float = Field(..., ge=0)
+class CartItemResponseSchema(BaseModel):
+    product_id: int
+    quantity: int
+    price: Decimal
+    name: str | None = None
+    image: str | None = None
 
 class CartUpdateSchema(BaseModel):
     session_id: str
-    product_id: str
-    quantity: int
+    product_id: int
+    quantity: int = Field(..., gt=0)
 
+# Добавь эту схему для эндпоинта удаления
 class CartRemoveSchema(BaseModel):
     session_id: str
-    product_id: str
+    product_id: int

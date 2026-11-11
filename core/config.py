@@ -11,6 +11,8 @@ class Settings(BaseSettings):
     TELEGRAM_BOT_TOKEN: str
     TELEGRAM_CHAT_ID: str
 
+    SERVICE_API_KEY: str
+
     SECRET_KEY: str
     ADMIN_USERNAME: str
     ADMIN_PASSWORD: str

@@ -1,8 +1,9 @@
 import enum
 from datetime import datetime, timezone
+from decimal import Decimal
 from typing import List
 
-from sqlalchemy import ForeignKey, String, Numeric, DateTime, Enum
+from sqlalchemy import ForeignKey, String, Numeric, DateTime, Enum, Integer
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .base import Base
@@ -20,7 +21,7 @@ class Order(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True, index=True)
     status: Mapped[OrderStatus] = mapped_column(Enum(OrderStatus), default=OrderStatus.PENDING)
-    total_amount: Mapped[float] = mapped_column(Numeric(10, 2))
+    total_amount: Mapped[Decimal] = mapped_column(Numeric(10, 2))
 
     # Контактные данные пациента
     customer_name: Mapped[str] = mapped_column(String(100))
@@ -28,7 +29,7 @@ class Order(Base):
     customer_email: Mapped[str] = mapped_column(String(100), nullable=True)
 
     payment_id: Mapped[str] = mapped_column(String(100), nullable=True, unique=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 
     items: Mapped[List["OrderItem"]] = relationship(back_populates="order", cascade="all, delete-orphan")
 
@@ -40,9 +41,9 @@ class OrderItem(Base):
     order_id: Mapped[int] = mapped_column(ForeignKey("orders.id"))
 
     # ID товара или услуги из warehouse_project
-    product_id: Mapped[str] = mapped_column(String(50), index=True)
+    product_id: Mapped[int] = mapped_column(Integer, index=True)
 
     quantity: Mapped[int] = mapped_column(default=1)
-    price_at_purchase: Mapped[float] = mapped_column(Numeric(10, 2))
+    price_at_purchase: Mapped[Decimal] = mapped_column(Numeric(10, 2))
 
     order: Mapped["Order"] = relationship(back_populates="items")
