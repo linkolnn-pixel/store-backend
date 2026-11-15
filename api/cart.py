@@ -4,7 +4,8 @@ from schemas.promo import PromoApplyRequest
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from db.postgres import get_db_session
-from schemas.cart import CartItemAddSchema, CartUpdateSchema, CartRemoveSchema
+# ВАЖНО: Добавили CertificateAddRequest сюда
+from schemas.cart import CartItemAddSchema, CartUpdateSchema, CartRemoveSchema, CertificateAddRequest
 
 from services import cart as cart_service
 from services.promo_service import validate_promo_with_warehouse
@@ -20,6 +21,24 @@ async def add_item_to_cart(item: CartItemAddSchema, session_id: str | None = Non
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
 
 
+# =========================================================
+# 🚨 ЭНДПОИНТ СЕРТИФИКАТА СТРОГО ВЫШЕ ЭНДПОИНТА {session_id}
+# =========================================================
+@router.post("/cart/certificate", summary="Добавить подарочный сертификат в корзину")
+async def add_certificate_to_cart(
+    item: CertificateAddRequest,
+    session_id: str | None = None
+):
+    try:
+        new_session, updated_cart = await cart_service.add_certificate_to_cart(session_id, item)
+        return {"session_id": new_session, "cart": updated_cart}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+# =========================================================
+# ТЕПЕРЬ ИДЕТ ЭНДПОИНТ С ПАРАМЕТРОМ В ПУТИ
+# =========================================================
 @router.get("/cart/{session_id}", summary="Получить состав корзины")
 async def view_cart(session_id: str, db: AsyncSession = Depends(get_db_session)):
     try:

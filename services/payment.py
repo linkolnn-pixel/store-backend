@@ -1,12 +1,15 @@
 import uuid
 
 from core.exceptions import PaymentNotFoundError, PaymentAlreadyProcessedError
+from fastapi import BackgroundTasks
+from services.certificates import process_and_send_certificate
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 
 from core.config import settings
 from models.order import Order, OrderStatus
 from models.outbox import OutboxEvent, OutboxStatus
+from sqlalchemy.orm import selectinload
 
 
 # ==========================================
@@ -34,12 +37,12 @@ async def create_payment_link(amount: float, order_id: int) -> tuple[str, str]:
 
 # ==========================================
 # 2. ВХОДЯЩАЯ ЛОГИКА (Обработка вебхука)
-# Вызывается из api/payment.py, когда банк присылает подтверждение
 # ==========================================
-async def process_successful_payment(payment_id: str, db: AsyncSession) -> dict:
+async def process_successful_payment(payment_id: str, db: AsyncSession, background_tasks: BackgroundTasks) -> dict:
     print(f"👉 [DEBUG] Начало process_successful_payment для payment_id: {payment_id}")
 
-    stmt = select(Order).where(Order.payment_id == payment_id)
+    # ВАЖНО: Добавили options(selectinload(Order.items)), чтобы база сразу подтянула список товаров
+    stmt = select(Order).options(selectinload(Order.items)).where(Order.payment_id == payment_id)
     result = await db.execute(stmt)
     order = result.scalar_one_or_none()
 
@@ -57,6 +60,22 @@ async def process_successful_payment(payment_id: str, db: AsyncSession) -> dict:
     order.status = OrderStatus.PAID
     print("👉 [DEBUG] Статус изменён на PAID. Формируем событие outbox...")
 
+    # ==========================================
+    # НОВАЯ ЛОГИКА: ПРОВЕРКА СЕРТИФИКАТОВ
+    # ==========================================
+    for item in order.items:
+        # Проверяем, есть ли у нас meta_data и это сертификат
+        if item.meta_data and item.meta_data.get("type") == "gift_certificate":
+            recipient = item.meta_data.get("recipient_email")
+            print(f"👉 [DEBUG] Найден сертификат! Ставим задачу на отправку для {recipient}")
+            # Кидаем отправку в фон, FastAPI сам выполнит её после ответа клиенту
+            background_tasks.add_task(
+                process_and_send_certificate,
+                cert_data=item.meta_data,
+                order_id=order.id
+            )
+    # ==========================================
+
     outbox_payload = {
         "local_order_id": order.id,
         "payment_id": payment_id,
@@ -67,7 +86,7 @@ async def process_successful_payment(payment_id: str, db: AsyncSession) -> dict:
         event_type="order_paid",
         payload=outbox_payload,
         status=OutboxStatus.PENDING.value,
-        processed=False  # Явно указываем False на всякий случай
+        processed=False
     )
 
     db.add(outbox_event)

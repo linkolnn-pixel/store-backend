@@ -159,7 +159,6 @@ async def get_cart_with_meta(session_id: str, db: AsyncSession, phone: str | Non
     if not cart:
         raise CartNotFoundError("Корзина не найдена или истекла")
 
-    # === СИНХРОНИЗАЦИЯ КОРЗИНЫ ПРИ ЛОГИНЕ ===
     if phone and cart.get("customer_phone") != phone:
         cart["customer_phone"] = phone
         await save_cart(session_id, cart)
@@ -167,15 +166,37 @@ async def get_cart_with_meta(session_id: str, db: AsyncSession, phone: str | Non
     if not cart.get("items"):
         return cart
 
-    product_ids = [int(item["product_id"]) for item in cart["items"]]
-
-    stmt = select(ProductMeta).where(ProductMeta.warehouse_product_id.in_(product_ids))
-    result = await db.execute(stmt)
-    meta_dict = {meta.warehouse_product_id: meta for meta in result.scalars().all()}
-
-    warehouse_products = await fetch_warehouse_names(product_ids)
-
+    # 1. Отбираем ТОЛЬКО обычные товары (у которых ID - число или строка с цифрами)
+    product_ids = []
     for item in cart["items"]:
+        # Пропускаем сертификаты
+        if str(item["product_id"]).startswith("CERT_"):
+            continue
+        try:
+            product_ids.append(int(item["product_id"]))
+        except ValueError:
+            pass
+
+    # 2. Получаем мета-данные из БД только для обычных товаров
+    meta_dict = {}
+    warehouse_products = {}
+
+    if product_ids:
+        stmt = select(ProductMeta).where(ProductMeta.warehouse_product_id.in_(product_ids))
+        result = await db.execute(stmt)
+        meta_dict = {meta.warehouse_product_id: meta for meta in result.scalars().all()}
+        warehouse_products = await fetch_warehouse_names(product_ids)
+
+    # 3. Формируем финальный список товаров
+    for item in cart["items"]:
+        # Если это сертификат
+        if str(item["product_id"]).startswith("CERT_"):
+            item["image"] = ""  # У сертификата пока нет картинки
+            # Имя и цену мы уже сохранили при добавлении в add_certificate_to_cart
+            item["price"] = Decimal(str(item["price"]))
+            continue
+
+        # Если это обычный товар
         pid = int(item["product_id"])
         meta = meta_dict.get(pid)
         original_name = warehouse_products.get(pid, f"Товар #{pid}")
@@ -184,11 +205,10 @@ async def get_cart_with_meta(session_id: str, db: AsyncSession, phone: str | Non
         item["image"] = meta.images[0] if meta and meta.images else ""
         item["price"] = Decimal(str(item["price"]))
 
-    # 1. Считаем чистую сумму товаров
+    # 4. Считаем суммы
     subtotal = sum(item["price"] * item["quantity"] for item in cart["items"])
     cart["subtotal"] = subtotal
 
-    # 2. Проверяем, есть ли промокод
     discount_amount = Decimal("0.00")
     promo_data = await get_promo_from_cart(session_id)
 
@@ -201,7 +221,6 @@ async def get_cart_with_meta(session_id: str, db: AsyncSession, phone: str | Non
         cart["promo_code"] = None
         cart["discount_amount"] = Decimal("0.00")
 
-    # 3. Итоговая сумма к оплате (с вычетом скидки)
     cart["total"] = subtotal - discount_amount
     return cart
 
@@ -231,3 +250,42 @@ async def validate_certificate_with_warehouse(code: str) -> dict:
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail="Сервис сертификатов временно недоступен"
             )
+
+
+async def add_certificate_to_cart(session_id: str | None, cert_data):
+    if not session_id:
+        session_id = str(uuid.uuid4())
+
+    # Безопасное получение корзины (один раз!)
+    try:
+        cart = await get_cart(session_id)
+        # Если get_cart вернул None (хотя обычно он бросает исключение)
+        if cart is None:
+            cart = {"session_id": session_id, "items": [], "total": Decimal("0.0")}
+    except Exception:
+        # Если корзина не найдена - создаем правильную чистую структуру
+        cart = {"session_id": session_id, "items": [], "total": Decimal("0.0")}
+
+    # Генерируем уникальный строковый ID для сертификата
+    cert_cart_id = f"CERT_{uuid.uuid4().hex[:8]}"
+
+    cart_item = {
+        "type": "gift_certificate",
+        "product_id": cert_cart_id,
+        "quantity": cert_data.quantity,
+        "price": Decimal(str(cert_data.price)), # Важно: приводим к Decimal для единообразия
+        "recipient_email": cert_data.recipient_email,
+        "sender_name": cert_data.sender_name,
+        "message": cert_data.message,
+        "name": f"Подарочный сертификат на {cert_data.price} руб."
+    }
+
+    cart["items"].append(cart_item)
+
+    # Пересчитываем сумму корзины
+    cart["total"] = sum(Decimal(str(i["price"])) * i["quantity"] for i in cart["items"])
+
+    # Сохраняем обратно в Redis
+    await save_cart(session_id, cart)
+
+    return session_id, cart

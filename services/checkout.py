@@ -65,29 +65,34 @@ async def create_order_from_cart(request_data: CheckoutRequest, db: AsyncSession
 
     # 4. Привязываем товары
     for item in cart["items"]:
+        # 🚨 ИГНОРИРУЕМ СЕРТИФИКАТЫ для таблицы order_items, чтобы не сломать int()
+        if str(item["product_id"]).startswith("CERT_"):
+            continue
+
         order_item = OrderItem(
             order_id=new_order.id,
-            product_id=item["product_id"],
+            product_id=int(item["product_id"]),  # Защищаем приведением к int
             quantity=item["quantity"],
             price_at_purchase=item["price"]
         )
         db.add(order_item)
 
-    # 5. ФОРМИРУЕМ OUTBOX EVENT для воркера (ПРОКИДЫВАЕМ НОВЫЕ ПОЛЯ)
+    # 5. ФОРМИРУЕМ OUTBOX EVENT для воркера
     outbox_payload = {
         "local_order_id": new_order.id,
         "customer_name": request_data.customer_name,
         "customer_phone": request_data.customer_phone,
         "customer_email": request_data.customer_email,
-        "comment": request_data.comment,  # <-- Передаем коммент в Django
-        "gift_certificate": request_data.gift_certificate,  # <-- Передаем код карты в Django
+        "comment": request_data.comment,
+        "gift_certificate": request_data.gift_certificate,
         "order_details": {
             "subtotal": float(cart["subtotal"]),
             "promo_code": cart.get("promo_code"),
             "discount_amount": float(cart.get("discount_amount", 0.0)),
-            "certificate_amount_used": float(certificate_amount_used),  # Сколько сняли с карты
-            "total_to_pay": float(total_to_pay)  # Сколько доплатили
+            "certificate_amount_used": float(certificate_amount_used),
+            "total_to_pay": float(total_to_pay)
         },
+        # 🚨 А ВОТ ТУТ СЕРТИФИКАТЫ ОСТАЮТСЯ! В JSON они улетят без проблем
         "items": [
             {
                 "product_id": item["product_id"],
@@ -113,7 +118,6 @@ async def create_order_from_cart(request_data: CheckoutRequest, db: AsyncSession
     # 6. ИНТЕГРАЦИЯ С БАНКОМ
     payment_url = None
     if total_to_pay > 0:
-        # Дергаем эквайринг только если есть что оплачивать
         try:
             payment_url, payment_id = await create_payment_link(
                 amount=float(total_to_pay),

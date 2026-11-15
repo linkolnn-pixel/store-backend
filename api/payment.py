@@ -1,5 +1,5 @@
 from core.exceptions import PaymentGatewayError, PaymentNotFoundError, PaymentAlreadyProcessedError
-from fastapi import APIRouter, Depends, HTTPException, status, Query
+from fastapi import APIRouter, Depends, HTTPException, status, Query, BackgroundTasks # <--- ДОБАВЛЕНО
 from models.order import Order, OrderStatus
 from models.outbox import OutboxStatus, OutboxEvent
 from services.payment import process_successful_payment
@@ -31,8 +31,13 @@ async def process_checkout(
             detail=f"Оплата временно недоступна, попробуйте позже. Ошибка: {str(e)}"
         )
 
+
 @router.post("/webhook")
-async def yookassa_webhook(payload: dict, db: AsyncSession = Depends(get_db_session)):
+async def yookassa_webhook(
+        payload: dict,
+        background_tasks: BackgroundTasks, # <--- ДОБАВЛЕНО
+        db: AsyncSession = Depends(get_db_session)
+):
     try:
         print(f"📥 Получен вебхук: {payload}")
 
@@ -52,7 +57,8 @@ async def yookassa_webhook(payload: dict, db: AsyncSession = Depends(get_db_sess
                 detail="Не удалось обнаружить payment_id в запросе"
             )
 
-        result = await process_successful_payment(str(payment_id), db)
+        # ПЕРЕДАЕМ background_tasks В СЕРВИС:
+        result = await process_successful_payment(str(payment_id), db, background_tasks)
         return result
 
     except PaymentNotFoundError as e:
@@ -70,6 +76,7 @@ async def yookassa_webhook(payload: dict, db: AsyncSession = Depends(get_db_sess
 @router.get("/payment/mock-success")
 async def mock_payment_success(
         order_id: int = Query(..., description="ID заказа для мок-оплаты"),
+        background_tasks: BackgroundTasks = BackgroundTasks(), # <--- ДОБАВЛЕНО
         db: AsyncSession = Depends(get_db_session)
 ):
     """Эндпоинт-заглушка: передает управление в process_successful_payment"""
@@ -94,8 +101,8 @@ async def mock_payment_success(
         await db.commit()
 
     try:
-        # Вызываем единую функцию
-        result = await process_successful_payment(payment_id_to_process, db)
+        # Вызываем единую функцию И ПЕРЕДАЕМ background_tasks:
+        result = await process_successful_payment(payment_id_to_process, db, background_tasks)
         return {
             "status": "success",
             "message": f"Платёж для заказа №{order_id} успешно эмулирован!",

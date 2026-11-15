@@ -6,8 +6,10 @@ from sqlalchemy.future import select
 from core.config import settings
 from db.postgres import AsyncSessionLocal
 from models.outbox import OutboxEvent, OutboxStatus
+from services.notifications import send_certificate_email  # <--- Импорт отправки email
 
 headers = {"X-Service-Token": settings.SERVICE_API_KEY}
+
 
 async def send_telegram_message(client: httpx.AsyncClient, text: str):
     """Отправка уведомления в Telegram"""
@@ -109,7 +111,8 @@ async def process_outbox_events():
                         # Создаем заказ в складе (если его там еще нет)
                         if not created_sale_id:
                             sale_items = [
-                                {"product": i["product_id"], "quantity": i["quantity"], "sale_price": float(i["price"])}
+                                {"product_id": i["product_id"], "quantity": i["quantity"], "price": float(i["price"]),
+                                 "name": i.get("name")}
                                 for i in payload["items"]
                             ]
 
@@ -150,8 +153,26 @@ async def process_outbox_events():
                             if sale_resp.status_code not in (200, 201):
                                 raise ValueError(f"Ошибка создания Sale: HTTP {sale_resp.status_code} {sale_resp.text}")
 
-                            created_sale_id = sale_resp.json().get("id")
+                            response_data = sale_resp.json()
+                            created_sale_id = response_data.get("id")
                             is_new_sale = True
+
+                            # ==========================================
+                            # 🚀 НОВАЯ ЛОГИКА: ОТПРАВКА СЕРТИФИКАТОВ
+                            # ==========================================
+                            generated_certificates = response_data.get("generated_certificates", [])
+                            customer_email = payload.get("customer_email")
+
+                            if generated_certificates and customer_email:
+                                print(f"Отправка {len(generated_certificates)} сертификатов на {customer_email}")
+                                # Вызываем функцию асинхронно, чтобы не тормозить цикл воркера
+                                asyncio.create_task(
+                                    send_certificate_email(
+                                        recipient_email=customer_email,
+                                        customer_name=customer_name,
+                                        certificates=generated_certificates
+                                    )
+                                )
 
                         # Отправка в Telegram о новом заказе
                         if is_new_sale:
@@ -164,10 +185,12 @@ async def process_outbox_events():
                                 product_name = item.get("name", f"Товар ID {item['product_id']}")
                                 if "name" not in item:
                                     try:
-                                        prod_resp = await client.get(
-                                            f"{settings.WAREHOUSE_URL}/api/products/{item['product_id']}/")
-                                        if prod_resp.status_code == 200:
-                                            product_name = prod_resp.json().get("name", product_name)
+                                        # Не делаем запрос в Django, если это сертификат (начинается с CERT_)
+                                        if not str(item['product_id']).startswith("CERT_"):
+                                            prod_resp = await client.get(
+                                                f"{settings.WAREHOUSE_URL}/api/products/{item['product_id']}/")
+                                            if prod_resp.status_code == 200:
+                                                product_name = prod_resp.json().get("name", product_name)
                                     except Exception as e:
                                         print(f"Сетевая ошибка при получении имени товара: {e}")
 
@@ -232,8 +255,6 @@ async def process_outbox_events():
 
                         if post_resp.status_code not in (200, 201):
                             # ДЖАНГО ВЕРНУЛ ОШИБКУ (НАПРИМЕР, НЕ ХВАТАЕТ ОСТАТКОВ)
-                            # Мы не роняем воркер (не вызываем raise ValueError),
-                            # а просто шлем алерт в ТГ и помечаем событие как обработанное!
                             error_text = html.escape(post_resp.text)
 
                             tg_msg = (
@@ -257,7 +278,6 @@ async def process_outbox_events():
                                 f"🛒 <b>Заказ:</b> #{local_order_id}\n"
                                 f"💰 <b>Сумма:</b> {amount} руб.\n"
                                 f"💳 <b>Транзакция:</b> {payment_id}\n"
-                                f"📦 <b>Остатки товаров успешно списаны со склада.</b>\n\n"
                                 f"🔗 <a href='{order_url}'>Посмотреть заказ</a>"
                             )
                             await send_telegram_message(client, tg_msg)
@@ -265,6 +285,7 @@ async def process_outbox_events():
                             event.processed = True
                             event.error_message = None
                             print(f"Событие оплаты для заказа #{local_order_id} успешно обработано (остатки списаны).")
+
                     # ==========================================
                     # 3. НЕИЗВЕСТНОЕ СОБЫТИЕ
                     # ==========================================
