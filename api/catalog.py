@@ -1,7 +1,7 @@
 from fastapi import APIRouter, HTTPException, Depends, Path, UploadFile, File
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from api.auth import get_current_admin
+from api.dependencies import get_current_admin
 from db.postgres import get_db_session
 from schemas.product import ProductMetaUpdate
 from services import catalog as catalog_service

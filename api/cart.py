@@ -1,9 +1,13 @@
+import httpx
 from fastapi import APIRouter, HTTPException, Depends, status
+from schemas.promo import PromoApplyRequest
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from db.postgres import get_db_session
 from schemas.cart import CartItemAddSchema, CartUpdateSchema, CartRemoveSchema
+
 from services import cart as cart_service
+from services.promo_service import validate_promo_with_warehouse
 
 router = APIRouter()
 
@@ -40,3 +44,42 @@ async def remove_item_from_cart(data: CartRemoveSchema):
         return {"message": "Товар удален", "cart": cart}
     except cart_service.CartNotFoundError as e:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
+
+
+@router.post("/promo/apply", summary="Применить промокод к корзине")
+async def apply_promo_api(
+        payload: PromoApplyRequest,
+        session_id: str
+):
+    if not session_id:
+        raise HTTPException(status_code=400, detail="session_id обязателен")
+
+    # 1. Спрашиваем у Django
+    promo_result = await validate_promo_with_warehouse(payload.promo_code)
+
+    if not promo_result.is_valid:
+        # Отдаем ошибку с сообщением от Django (например, "Промокод истек")
+        raise HTTPException(status_code=400, detail=promo_result.message)
+
+    # 2. Сохраняем в Redis
+    await cart_service.apply_promo_to_cart(session_id, promo_result)
+
+    return {
+        "success": True,
+        "message": f"Промокод {promo_result.code} успешно применен!"
+    }
+
+
+@router.delete("/promo/remove", summary="Удалить промокод из корзины")
+async def remove_promo_api(session_id: str):
+    if not session_id:
+        raise HTTPException(status_code=400, detail="session_id обязателен")
+
+    await cart_service.remove_promo_from_cart(session_id)
+    return {"success": True, "message": "Промокод удален"}
+
+
+@router.get("/certificates/validate/", summary="Проверить баланс подарочного сертификата")
+async def validate_gift_certificate(code: str):
+    # Роутер просто вызывает сервис. Все проверки и ошибки (HTTPException) обрабатываются там!
+    return await cart_service.validate_certificate_with_warehouse(code)

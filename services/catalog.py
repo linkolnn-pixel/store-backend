@@ -2,6 +2,7 @@ import os
 import shutil
 import uuid
 import httpx
+from core.exceptions import WarehouseUnavailableError, WarehouseAuthError, ProductNotFoundError, InvalidFileTypeError
 from fastapi import UploadFile
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
@@ -11,29 +12,13 @@ from models.product_meta import ProductMeta
 from schemas.product import ProductMetaUpdate
 
 
-# --- Исключения ---
-class WarehouseUnavailableError(Exception):
-    pass
-
-
-class WarehouseAuthError(Exception):
-    pass
-
-
-class ProductNotFoundError(Exception):
-    pass
-
-
-class InvalidFileTypeError(Exception):
-    pass
-
-
 UPLOAD_DIR = "uploads/images"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
+headers = {"X-Service-Token": settings.SERVICE_API_KEY}
 
 async def fetch_categories() -> list | dict:
-    async with httpx.AsyncClient(timeout=3.0) as client:
+    async with httpx.AsyncClient(headers=headers, timeout=3.0) as client:
         try:
             response = await client.get(f"{settings.WAREHOUSE_URL}/api/categories/")
             response.raise_for_status()
@@ -46,8 +31,6 @@ async def fetch_categories() -> list | dict:
 
 
 async def get_full_catalog(db: AsyncSession) -> list:
-    headers = {"X-Service-Token": settings.SERVICE_API_KEY}
-
     async with httpx.AsyncClient(headers=headers, timeout=5.0) as client:
         try:
             response = await client.get(f"{settings.WAREHOUSE_URL}/api/products/")
@@ -88,7 +71,7 @@ async def get_full_catalog(db: AsyncSession) -> list:
 
 
 async def get_product_detail(product_id: int, db: AsyncSession) -> dict:
-    async with httpx.AsyncClient(timeout=3.0) as client:
+    async with httpx.AsyncClient(headers=headers, timeout=3.0) as client:
         try:
             response = await client.get(f"{settings.WAREHOUSE_URL}/api/products/{product_id}/")
             response.raise_for_status()

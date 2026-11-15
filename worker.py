@@ -1,12 +1,13 @@
 import asyncio
-import html  # ВАЖНО: нужно для безопасной отправки в Telegram
+import html
 import httpx
 from sqlalchemy.future import select
 
 from core.config import settings
 from db.postgres import AsyncSessionLocal
-from models.outbox import OutboxEvent
+from models.outbox import OutboxEvent, OutboxStatus
 
+headers = {"X-Service-Token": settings.SERVICE_API_KEY}
 
 async def send_telegram_message(client: httpx.AsyncClient, text: str):
     """Отправка уведомления в Telegram"""
@@ -27,7 +28,11 @@ async def send_telegram_message(client: httpx.AsyncClient, text: str):
 async def process_outbox_events():
     async with AsyncSessionLocal() as session:
         # Ограничиваем выборку 50 записями за раз
-        stmt = select(OutboxEvent).where(OutboxEvent.processed == False).order_by(OutboxEvent.created_at).limit(50)
+        stmt = select(OutboxEvent).where(
+            OutboxEvent.processed == False,
+            OutboxEvent.status == OutboxStatus.PENDING.value
+        ).order_by(OutboxEvent.created_at).limit(50)
+
         result = await session.execute(stmt)
         events = result.scalars().all()
 
@@ -35,7 +40,6 @@ async def process_outbox_events():
             return
 
         print(f"Найдено необработанных событий: {len(events)}")
-        headers = {"X-Service-Token": settings.SERVICE_API_KEY}
 
         async with httpx.AsyncClient(headers=headers, timeout=15.0) as client:
             for event in events:
@@ -50,7 +54,9 @@ async def process_outbox_events():
                         phone = payload["customer_phone"]
 
                         # Разбиваем строку с ФИО на имя и фамилию для Django
-                        name_parts = payload["customer_name"].strip().split(" ", 1)
+                        raw_name = payload.get("customer_name")
+                        customer_name = raw_name.strip() if raw_name else "Без имени"
+                        name_parts = customer_name.split(" ", 1)
                         first_name = name_parts[0]
                         last_name = name_parts[1] if len(name_parts) > 1 else "-"
 
@@ -81,14 +87,13 @@ async def process_outbox_events():
                             if create_resp.status_code in (200, 201):
                                 customer_id = create_resp.json()["id"]
                             else:
-                                # ИСПРАВЛЕНО: убрал перенос строки в f-строке
                                 raise ValueError(
                                     f"Ошибка создания клиента: HTTP {create_resp.status_code} {create_resp.text}")
 
                         created_sale_id = None
                         is_new_sale = False
 
-                        # Идемпотентность
+                        # Идемпотентность (проверяем, не отправляли ли мы уже этот заказ)
                         if local_order_id:
                             check_resp = await client.get(
                                 f"{settings.WAREHOUSE_URL}/api/sales/",
@@ -101,25 +106,48 @@ async def process_outbox_events():
                                     created_sale_id = res_list[0]["id"]
                                     print(f"⚠️ Заказ #{local_order_id} уже есть в Django (ID {created_sale_id}).")
 
-                        # Создаем заказ в складе
+                        # Создаем заказ в складе (если его там еще нет)
                         if not created_sale_id:
                             sale_items = [
                                 {"product": i["product_id"], "quantity": i["quantity"], "sale_price": float(i["price"])}
                                 for i in payload["items"]
                             ]
+
+                            # ДОСТАЕМ ДАННЫЕ СКИДКИ И СЕРТИФИКАТА
+                            order_details = payload.get("order_details", {})
+                            promo_code = order_details.get("promo_code", None)
+                            discount_amount = float(order_details.get("discount_amount", 0.0))
+
+                            gift_certificate = payload.get("gift_certificate", None)
+                            certificate_amount_used = float(order_details.get("certificate_amount_used", 0.0))
+
+                            # Собираем комментарий
+                            raw_comment = payload.get("comment")
+                            base_comment = raw_comment.strip() if raw_comment else ""
+                            comment = base_comment + "\n" if base_comment else ""
+                            comment += f"Заказ #{local_order_id}. Email: {payload.get('customer_email', '')}"
+
+                            if promo_code:
+                                comment += f"\nПромокод: {promo_code} (Скидка: {discount_amount} руб.)"
+                            if gift_certificate:
+                                comment += f"\nСертификат: {gift_certificate} (Списано: {certificate_amount_used} руб.)"
+
                             sale_data = {
                                 "warehouse": payload.get("warehouse_id", settings.DEFAULT_WAREHOUSE_ID),
                                 "customer": customer_id,
-                                "comment": f"Заказ #{local_order_id}. Email: {payload.get('customer_email', '')}",
+                                "comment": comment,
                                 "posted": False,
                                 "is_online": True,
                                 "external_id": local_order_id,
-                                "items": sale_items
+                                "items": sale_items,
+                                "promo_code": promo_code,
+                                "discount_amount": discount_amount,
+                                "gift_certificate": gift_certificate
                             }
+
                             sale_resp = await client.post(f"{settings.WAREHOUSE_URL}/api/sales/", json=sale_data)
 
                             if sale_resp.status_code not in (200, 201):
-                                # ИСПРАВЛЕНО: убрал перенос строки в f-строке
                                 raise ValueError(f"Ошибка создания Sale: HTTP {sale_resp.status_code} {sale_resp.text}")
 
                             created_sale_id = sale_resp.json().get("id")
@@ -143,10 +171,18 @@ async def process_outbox_events():
                                     except Exception as e:
                                         print(f"Сетевая ошибка при получении имени товара: {e}")
 
-                                # Экранируем HTML (иначе Telegram отбросит сообщение с ошибкой 400, если будут символы < > &)
                                 safe_product_name = html.escape(product_name)
                                 items_text += f"• {safe_product_name} — {item['quantity']} шт. ({item_total} руб.)\n"
 
+                            if discount_amount > 0:
+                                total_sum -= discount_amount
+                                items_text += f"\n🎁 <b>Скидка (промокод {promo_code}):</b> -{discount_amount} руб.\n"
+
+                            if certificate_amount_used > 0:
+                                total_sum -= certificate_amount_used
+                                items_text += f"\n💳 <b>Оплачено картой ({gift_certificate}):</b> -{certificate_amount_used} руб.\n"
+
+                            payment_status = "полностью оплачен картой" if total_sum <= 0 else "ожидает доплаты"
                             order_url = f"{settings.WAREHOUSE_URL}/inventory/sale/{created_sale_id}/"
                             safe_customer_name = html.escape(payload['customer_name'])
 
@@ -154,9 +190,9 @@ async def process_outbox_events():
                                 f"🚨 <b>НОВЫЙ ЗАКАЗ #{local_order_id}</b>\n\n"
                                 f"👤 <b>Клиент:</b> {safe_customer_name}\n"
                                 f"📞 <b>Телефон:</b> {phone}\n"
-                                f"💳 <b>Сумма:</b> {total_sum} руб.\n\n"
+                                f"💳 <b>К оплате:</b> {max(0, total_sum)} руб. <i>({payment_status})</i>\n\n"
                                 f"📦 <b>Состав заказа:</b>\n{items_text}\n"
-                                f"🔗 <a href='{order_url}'>Открыть заказ (не оплачен)</a>"
+                                f"🔗 <a href='{order_url}'>Открыть заказ в админке</a>"
                             )
                             await send_telegram_message(client, tg_msg)
 
@@ -165,24 +201,70 @@ async def process_outbox_events():
                         print(f"Событие создания заказа #{local_order_id} успешно обработано!")
 
                     # ==========================================
-                    # 2. ОБРАБОТКА: ОПЛАТА ЗАКАЗА
+                    # 2. ОБРАБОТКА: ОПЛАТА ЗАКАЗА (С АВТО-ПРОВЕДЕНИЕМ)
                     # ==========================================
                     elif event.event_type == "order_paid":
                         payment_id = payload.get("payment_id")
                         amount = payload.get("amount")
 
-                        tg_msg = (
-                            f"✅ <b>ОПЛАТА ПОСТУПИЛА!</b>\n\n"
-                            f"🛒 <b>Заказ:</b> #{local_order_id}\n"
-                            f"💰 <b>Сумма:</b> {amount} руб.\n"
-                            f"💳 <b>Транзакция:</b> {payment_id}"
+                        # 1. Ищем ID заказа в Django по нашему external_id
+                        check_resp = await client.get(
+                            f"{settings.WAREHOUSE_URL}/api/sales/",
+                            params={"external_id": local_order_id}
                         )
-                        await send_telegram_message(client, tg_msg)
 
-                        event.processed = True
-                        event.error_message = None
-                        print(f"Событие оплаты для заказа #{local_order_id} успешно обработано.")
+                        sale_id = None
+                        if check_resp.status_code == 200:
+                            res = check_resp.json()
+                            res_list = res.get("results", res) if isinstance(res, dict) else res
+                            if res_list:
+                                sale_id = res_list[0]["id"]
 
+                        if not sale_id:
+                            raise ValueError(f"Не удалось найти заказ {local_order_id} в Django для списания остатков.")
+
+                        # 2. Дергаем эндпоинт ПРОВЕДЕНИЯ (/post/), чтобы списать остатки
+                        post_resp = await client.post(
+                            f"{settings.WAREHOUSE_URL}/api/sales/{sale_id}/post/"
+                        )
+
+                        order_url = f"{settings.WAREHOUSE_URL}/inventory/sale/{sale_id}/"
+
+                        if post_resp.status_code not in (200, 201):
+                            # ДЖАНГО ВЕРНУЛ ОШИБКУ (НАПРИМЕР, НЕ ХВАТАЕТ ОСТАТКОВ)
+                            # Мы не роняем воркер (не вызываем raise ValueError),
+                            # а просто шлем алерт в ТГ и помечаем событие как обработанное!
+                            error_text = html.escape(post_resp.text)
+
+                            tg_msg = (
+                                f"⚠️ <b>ВНИМАНИЕ! НЕ ХВАТКА ТОВАРА</b>\n\n"
+                                f"🛒 <b>Заказ:</b> #{local_order_id}\n"
+                                f"💰 <b>Сумма:</b> {amount} руб.\n"
+                                f"❌ <b>Ответ склада:</b> {error_text[:250]}\n\n"
+                                f"<i>Заказ успешно передан на Склад (возможно, не хватает товара). Требуется ручная проверка!</i>\n\n"
+                                f"🔗 <a href='{order_url}'>Проверить заказ вручную</a>"
+                            )
+                            await send_telegram_message(client, tg_msg)
+
+                            event.processed = True
+                            event.error_message = f"Оплачен, но не проведен (ошибка склада): {post_resp.text}"
+                            print(f"⚠️ Ошибка проведения заказа #{local_order_id}, отправлено уведомление менеджерам.")
+
+                        else:
+                            # 3. УСПЕШНОЕ ПРОВЕДЕНИЕ И СПИСАНИЕ ОСТАТКОВ
+                            tg_msg = (
+                                f"✅ <b>ОПЛАТА ПОСТУПИЛА И ЗАКАЗ ПРОВЕДЕН!</b>\n\n"
+                                f"🛒 <b>Заказ:</b> #{local_order_id}\n"
+                                f"💰 <b>Сумма:</b> {amount} руб.\n"
+                                f"💳 <b>Транзакция:</b> {payment_id}\n"
+                                f"📦 <b>Остатки товаров успешно списаны со склада.</b>\n\n"
+                                f"🔗 <a href='{order_url}'>Посмотреть заказ</a>"
+                            )
+                            await send_telegram_message(client, tg_msg)
+
+                            event.processed = True
+                            event.error_message = None
+                            print(f"Событие оплаты для заказа #{local_order_id} успешно обработано (остатки списаны).")
                     # ==========================================
                     # 3. НЕИЗВЕСТНОЕ СОБЫТИЕ
                     # ==========================================
@@ -193,6 +275,7 @@ async def process_outbox_events():
 
                 except ValueError as e:
                     event.processed = True
+                    event.status = "ERROR"
                     event.error_message = str(e)
                     print(f"Бизнес-ошибка (заказ #{local_order_id}): {e}")
 
@@ -200,7 +283,7 @@ async def process_outbox_events():
                     event.error_message = f"Требует повтора: {str(e)}"
                     print(f"Сетевая ошибка (заказ #{local_order_id}): {e}")
 
-                # ИНДИВИДУАЛЬНЫЙ КОММИТ
+                # ИНДИВИДУАЛЬНЫЙ КОММИТ (сохраняем статус события в БД)
                 await session.commit()
 
 

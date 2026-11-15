@@ -1,5 +1,6 @@
 import os
 
+from api import admin_auth, customer_auth, profile
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.staticfiles import StaticFiles
@@ -9,7 +10,7 @@ from api.checkout import router as checkout_router
 from api.payment import router as payment_router
 from api.cart import router as cart_router
 from api.catalog import router as catalog_router
-from api.auth import router as auth_router
+from api.admin_auth import router as auth_router
 
 app = FastAPI(
     title=settings.PROJECT_NAME,
@@ -29,10 +30,12 @@ os.makedirs("uploads/images", exist_ok=True)
 app.mount("/uploads", StaticFiles(directory="uploads"), name="uploads")
 
 # Подключение роутеров
-app.include_router(auth_router, prefix="/api/v1", tags=["Авторизация"])
+app.include_router(admin_auth.router, prefix="/api/v1", tags=["Admin auth"])
+app.include_router(customer_auth.router, prefix="/api/v1", tags=["Customer auth"])
+app.include_router(profile.router, prefix="/api/v1", tags=["Customer profile"])
 app.include_router(checkout_router, prefix="/api/v1", tags=["Заказы"])
 app.include_router(payment_router, prefix="/api/v1", tags=["Интеграции"])
-app.include_router(cart_router, prefix="/api/v1", tags=["Корзина"])
+app.include_router(cart_router, prefix="/api/v1", tags=["Cart & Promo"])
 app.include_router(catalog_router, prefix="/api/v1", tags=["Catalog"])
 
 @app.get("/health", tags=["Система"])
