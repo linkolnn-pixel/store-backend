@@ -30,10 +30,11 @@ async def fetch_categories() -> list | dict:
             raise WarehouseUnavailableError("Склад временно недоступен")
 
 
-async def get_full_catalog(db: AsyncSession) -> list:
+async def get_full_catalog(db: AsyncSession, *, new_arrivals: bool = False) -> list:
     async with httpx.AsyncClient(headers=headers, timeout=5.0) as client:
         try:
-            response = await client.get(f"{settings.WAREHOUSE_URL}/api/products/")
+            endpoint = "products/new_arrivals" if new_arrivals else "products"
+            response = await client.get(f"{settings.WAREHOUSE_URL}/api/{endpoint}/")
             response.raise_for_status()
             warehouse_data = response.json()
             products = warehouse_data.get("results", warehouse_data) if isinstance(warehouse_data,

@@ -27,6 +27,22 @@ async def get_catalog(db: AsyncSession = Depends(get_db_session)):
         raise HTTPException(status_code=503, detail=str(e))
 
 
+@router.get(
+    "/catalog/new_arrivals",
+    summary="Получить товары раздела «Новинки»",
+    description=(
+        "Товары за последние 60 дней, отобранные и отсортированные складом. "
+        "Ответ дополнен описаниями, названиями и фотографиями витрины."
+    ),
+    responses={503: {"description": "Склад недоступен или отклонил запрос"}},
+)
+async def get_new_arrivals(db: AsyncSession = Depends(get_db_session)):
+    try:
+        return await catalog_service.get_full_catalog(db, new_arrivals=True)
+    except (catalog_service.WarehouseUnavailableError, catalog_service.WarehouseAuthError) as e:
+        raise HTTPException(status_code=503, detail=str(e))
+
+
 @router.get("/catalog/{product_id}", summary="Получить детальную карточку товара")
 async def get_product(
     product_id: int = Path(...),
