@@ -49,8 +49,8 @@ async def get_full_catalog(db: AsyncSession, *, new_arrivals: bool = False) -> l
     if not products:
         return []
 
-    filtered_products = [p for p in products if "пакет" not in p.get("brand", "").lower()
-                         and "dmk" not in p.get("brand", "").lower()]
+    filtered_products = [p for p in products if "пакет" not in p.get("brand" or "").lower()
+                         and "dmk" not in p.get("brand" or "").lower()]
     if not filtered_products:
         return []
 

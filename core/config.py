@@ -17,6 +17,11 @@ class Settings(BaseSettings):
     ADMIN_USERNAME: str
     ADMIN_PASSWORD: str
 
+    LLM_API_KEY: str | None = None
+    LLM_BASE_URL: str
+    EMBEDDING_MODEL: str
+    CHAT_MODEL: str
+
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
 settings = Settings()

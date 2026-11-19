@@ -10,7 +10,7 @@ from api.checkout import router as checkout_router
 from api.payment import router as payment_router
 from api.cart import router as cart_router
 from api.catalog import router as catalog_router
-from api.admin_auth import router as auth_router
+from api.rag import router as rag_router
 
 app = FastAPI(
     title=settings.PROJECT_NAME,
@@ -37,6 +37,7 @@ app.include_router(checkout_router, prefix="/api/v1", tags=["Заказы"])
 app.include_router(payment_router, prefix="/api/v1", tags=["Интеграции"])
 app.include_router(cart_router, prefix="/api/v1", tags=["Cart & Promo"])
 app.include_router(catalog_router, prefix="/api/v1", tags=["Catalog"])
+app.include_router(rag_router, prefix="/api/v1")
 
 @app.get("/health", tags=["Система"])
 async def health_check():
